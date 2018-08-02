@@ -118,14 +118,19 @@ static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_
     int nfound=0;
     for(int i=0;i<nwanted;i++) {
         const char *wanted_colname = wanted_columns[i];
+        int found=0;
         for(int j=0;j<totncols;j++) {
             const char *file_colname = names[j];
             if (strcasecmp(wanted_colname, file_colname) == 0) {
-                /* fprintf(stderr, "Found `%s' in column # %d\n", wanted_colname, j); */
+                /* fprintf(stderr, "Found `%s` in column # %d as with name `%s`\n", wanted_colname, j, file_colname); */
                 columns[i] = j;
                 nfound++;
+                found = 1;
                 break;
             }
+        }
+        if(found == 0) {
+            fprintf(stderr,"Did not find requested column `%s'\n", wanted_colname);
         }
     }
     /* fprintf(stderr,"Found %d columns out of the requested %d\n", nfound, nwanted); */
@@ -154,8 +159,9 @@ static inline int reallocate_base_ptrs(struct base_ptr_info *base_info, const in
 }
 
 
-static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLNAME_LEN], enum parse_numeric_types *field_types, const int64_t nfields,
-                                      const char *filename, struct ctrees_column_to_ptr *column_info)
+static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLNAME_LEN], enum parse_numeric_types *field_types,
+                                      int64_t *base_ptr_idx, size_t *dest_offset_to_element,
+                                      const int64_t nfields, const char *filename, struct ctrees_column_to_ptr *column_info)
 {
     /* Because the struct elements (of column_info) are stored on the stack,
        need to check that nfields can fit */
@@ -266,6 +272,7 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
         if(matched_columns == NULL) {
             return EXIT_FAILURE;
         }
+        
         /* do not need the actual names of every column in the ctrees file any longer -> free that memory */
         free(names);
 
@@ -277,6 +284,8 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
 #define MULTIPLE_ARRAY_EXCHANGER(type,a,i,j) {                          \
             SGLIB_ARRAY_ELEMENTS_EXCHANGER(enum parse_numeric_types, field_types,i,j); \
             SGLIB_ARRAY_ELEMENTS_EXCHANGER(int, matched_columns, i, j); \
+            SGLIB_ARRAY_ELEMENTS_EXCHANGER(int64_t, base_ptr_idx, i, j); \
+            SGLIB_ARRAY_ELEMENTS_EXCHANGER(size_t, dest_offset_to_element, i, j); \
             SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER(PARSE_CTREES_MAX_COLNAME_LEN, column_names, i, j); \
         }
         
@@ -294,6 +303,8 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
             const int icol = column_info->ncols;
             column_info->column_number[icol] = matched_columns[i];
             column_info->field_types[icol] = field_types[i];
+            column_info->dest_offset_to_element[icol] = dest_offset_to_element[i];
+            column_info->base_ptr_idx[icol] = base_ptr_idx[i];
             column_info->ncols++;
         }
         free(matched_columns);
@@ -396,6 +407,8 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
         base_ptr_info->N++;
     }
     free(tofree);
+
+    return EXIT_SUCCESS;
 }
 
 
@@ -404,7 +417,8 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
     /* Because the struct elements (of column_info) are stored on the stack,
        need to check that nfields can fit */
     if(column_info->ncols  > PARSE_CTREES_MAX_NCOLS) {
-        fprintf(stderr,"Error: You have requested %"PRId64" columns but there is only space to store %"PRId64"\n", column_info->ncols, (int64_t) PARSE_CTREES_MAX_NCOLS);
+        fprintf(stderr,"Error: You have requested %"PRId64" columns but there is only space to store %"PRId64"\n",
+                column_info->ncols, (int64_t) PARSE_CTREES_MAX_NCOLS);
         fprintf(stderr,"Please define the macro variable `PARSE_CTREES_MAX_NCOLS' to be larger than %"PRId64" (before including the file `%s')\n",
                 column_info->ncols, __FILE__);
                 
@@ -413,13 +427,15 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
 
     const int num_chars_first_tree_line = 30;
     char first_tree_line[num_chars_first_tree_line];
-    while(pread(fd, &first_tree_line, num_chars_first_tree_line, offset) > 0) {
+    if(pread(fd, &first_tree_line, num_chars_first_tree_line, offset) > 0) {
         for(int i=0;i<num_chars_first_tree_line;i++) {
             offset++;
             if(first_tree_line[i] == '\n') {
                 break;
             }
         }
+    } else {
+        return EXIT_FAILURE;
     }
     
     char read_buffer[4*PARSE_CTREES_MAXBUFSIZE];
