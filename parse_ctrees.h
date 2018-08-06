@@ -28,7 +28,7 @@
 #define PARSE_CTREES_MAX_COLNAME_LEN 64
 
 /* max. number of expected characters in one single-line */
-#define PARSE_CTREES_MAXBUFSIZE      1024
+#define PARSE_CTREES_MAXBUFSIZE      1240
 
 #if PARSE_CTREES_MAX_COLNAME_LEN < 64
 #error Some of the Consistent-Trees column names are long. Please increase PARSE_CTREES_MAX_COLNAME_LEN to be at least 64
@@ -122,7 +122,7 @@ static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_
         for(int j=0;j<totncols;j++) {
             const char *file_colname = names[j];
             if (strcasecmp(wanted_colname, file_colname) == 0) {
-                /* fprintf(stderr, "Found `%s` in column # %d as with name `%s`\n", wanted_colname, j, file_colname); */
+                fprintf(stderr, "Found `%s` in column # %d as with name `%s`\n", wanted_colname, j, file_colname);
                 columns[i] = j;
                 nfound++;
                 found = 1;
@@ -133,13 +133,15 @@ static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_
             fprintf(stderr,"Did not find requested column `%s'\n", wanted_colname);
         }
     }
-    /* fprintf(stderr,"Found %d columns out of the requested %d\n", nfound, nwanted); */
+    fprintf(stderr,"Found %d columns out of the requested %d\n", nfound, nwanted);
     return columns;
 }
 
 
 static inline int reallocate_base_ptrs(struct base_ptr_info *base_info, const int64_t new_N)
 {
+    fprintf(stderr,"reallocating from %"PRId64" elements to a larger %"PRId64" elements. current N = %"PRId64"\n",
+            base_info->nallocated, new_N, base_info->N);
     for(int64_t i=0;i<base_info->num_base_ptrs;i++) {
         void **this_ptr = base_info->base_ptrs[i];
         const size_t size = base_info->base_element_size[i];
@@ -268,7 +270,7 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
                              totncols, col);
         free(tofree);
 
-        int * matched_columns = match_column_name(column_names, nfields, names, totncols);
+        int * matched_columns = match_column_name((const char (*)[PARSE_CTREES_MAX_COLNAME_LEN])column_names, nfields, (const char (*)[PARSE_CTREES_MAX_COLNAME_LEN]) names, totncols);
         if(matched_columns == NULL) {
             return EXIT_FAILURE;
         }
@@ -327,6 +329,7 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
 
     int icol = -1;
     char *tofree, *string;
+    /* fprintf(stderr,"in %s>linebuf = `%s`\n\n", __FUNCTION__, linebuf); */
     tofree = string = strdup(linebuf);
     char *token = NULL;
     for(int i=0;i<column_info->ncols;i++) {
@@ -353,49 +356,48 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
 
         /* now get to this particular field */
         dest += dest_offset;
-        const enum parse_numeric_types wanted_type = column_info->field_types[i];/* this is the type for the destination (hence called 'field_types' rather than 'column_types') */
+
+        /* this is the type for the destination (hence called 'field_types' rather than 'column_types') */
+        const enum parse_numeric_types wanted_type = column_info->field_types[i];
 
         /* there might be duplicate column numbers in matched_columns
            then the following while loop should immediately exit (without
            executing any lines within)
            and we will re-use the previous parsed value of token */
-        while(icol < wanted_col) {
-            do {
-                token = strsep(&string, " ");
-                PARSE_CTREES_XASSERT(token != NULL, EXIT_FAILURE,
-                                     "Error: token=`%s` should not be NULL\n",
-                                     token);
-                /* fprintf(stderr,"token = '%s' strlen(token) = %zu\n", token, strlen(token)); */
-            } while(token != NULL && ((token[0] == '\0') || (token[0] == ' ')));
+        while(icol < wanted_col || token == NULL) {
+            token = strsep(&string, " ,");
+            if(token != NULL && ((token[0] == '\0') || (token[0] == ' '))) {
+                continue;
+            }
             icol++;
         }
-        PARSE_CTREES_XASSERT(token != NULL && token[0] != '\0', EXIT_FAILURE,
-                             "Error: token=`%s` should have valid non-zero numeric value at this stage.\n",
-                             token);
-        /* fprintf(stderr,"token = `%s` icol = %d name = %s --  ", token, icol, names[icol]); */
+        PARSE_CTREES_XASSERT(token != NULL && token[0] != '\0' && icol == wanted_col, EXIT_FAILURE,
+                             "Error: token=`%s` should have valid non-zero numeric value at this stage.\n"
+                             "And the parsed col = %d should be equal to the requested column = %d\n",
+                             token, icol, wanted_col);
 
         switch(wanted_type) {
         case F32:{
             float tmp = strtof(token, NULL);
-            /* fprintf(stderr,"[float] := %f\n", tmp); */
+            /* fprintf(stderr,"[float] := %f (col #%d)\n", tmp, wanted_col); */
             *((float *) dest) = tmp;
             break;
         }
         case F64:{
             double tmp = strtod(token, NULL);
-            /* fprintf(stderr,"[double] := %lf\n", tmp); */
+            /* fprintf(stderr,"[double] := %lf (col #%d)\n", tmp, wanted_col); */
             *((double *) dest) = tmp;
             break;
         }
         case I32:{
             int32_t tmp = (int32_t) strtol(token, NULL, 10);
-            /* fprintf(stderr,"[int32_t] := %"PRId32"\n", tmp); */
+            /* fprintf(stderr,"[int32_t] := %"PRId32" (col #%d)\n", tmp, wanted_col); */
             *((int32_t *) dest) = tmp;
             break;
         }
         case I64:{
             int64_t tmp = (int64_t) strtoll(token, NULL, 10);
-            /* fprintf(stderr,"[int64_t] := %"PRId64"\n", tmp); */
+            /* fprintf(stderr,"[int64_t] := %"PRId64" (col #%d)\n", tmp, wanted_col); */
             *((int64_t *) dest) = tmp;
             break;
         }
@@ -404,10 +406,12 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
             fprintf(stderr,"Known values are in the range : [%d, %d)\n", I32, num_numeric_types);
             return EXIT_FAILURE;
         }
-        base_ptr_info->N++;
     }
     free(tofree);
 
+    base_ptr_info->N++;
+    /* fprintf(stderr,"parsed one line: base->N = %"PRId64" nallocated = %"PRId64" linebuf = `%s'\n", base_ptr_info->N, base_ptr_info->nallocated, linebuf); */
+    
     return EXIT_SUCCESS;
 }
 
@@ -425,70 +429,70 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
         return EXIT_FAILURE;
     } 
 
-    const int num_chars_first_tree_line = 30;
-    char first_tree_line[num_chars_first_tree_line];
-    if(pread(fd, &first_tree_line, num_chars_first_tree_line, offset) > 0) {
-        for(int i=0;i<num_chars_first_tree_line;i++) {
-            offset++;
-            if(first_tree_line[i] == '\n') {
-                break;
-            }
-        }
-    } else {
-        return EXIT_FAILURE;
-    }
-    
-    char read_buffer[4*PARSE_CTREES_MAXBUFSIZE];
-    const size_t to_read_bytes = sizeof(read_buffer)/sizeof(read_buffer[0]) - 1;
-    int done = 0;
+    char read_buffer[PARSE_CTREES_MAXBUFSIZE];
+    const size_t to_read_bytes = PARSE_CTREES_MAXBUFSIZE - 1;
+    read_buffer[PARSE_CTREES_MAXBUFSIZE - 1] = '\0';
+    int done_reading_tree = 0;
     /* two things can happen while reading -> EOF or I reach the next tree */
-    while(done == 0) {
+    while(done_reading_tree == 0) {
+        /* int first = 1; */
         ssize_t nbytes_read = pread(fd, read_buffer, to_read_bytes, offset);
         if(nbytes_read == 0) {
-            done = 1;
+            done_reading_tree = 1;/* we have reached end of file */
         } else if(nbytes_read < 0) {
             fprintf(stderr,"Error: trying to read %zu bytes from file failed. Encountered negative bytes read \n", to_read_bytes);
             perror(NULL);
             return EXIT_FAILURE;
         } else {
+            const off_t start_offset = offset;
+            if(read_buffer[0] == '#') {
+                done_reading_tree = 1;
+                break;
+            }
+            /* if(first == 1) { */
+            /*     fprintf(stderr,"read the first chunk\n`%s`\n\n",read_buffer); */
+            /*     first=0; */
+            /* } */
+            if(nbytes_read < (ssize_t) to_read_bytes) {
+                done_reading_tree = 1;/* we have reached end of file but this read buffer needs to be processed*/
+            }
+            
             /* some bytes were read -> now let's parse one line at a time */
-            ssize_t bytes_processed = 0;
             char *start = &(read_buffer[0]);
-            int keep_parsing = 1;
-            while(keep_parsing == 1) {
-                ssize_t curr_pos = 0;
-                char *this = start;
-                while(curr_pos < nbytes_read && *this != '\n') {
-                    if(*this == '#') {
-                        /* we have encountered the beginning of a new tree (new line and begins with '#tree ')*/
-                        done = 1;
-                        curr_pos = 0;/* should be 0 anyway but ensuring that bytes_processed does not get incremented */
-                        keep_parsing = 0;
-                        break;
+            const char *end = read_buffer + nbytes_read;
+            char *this = start;
+            while(this < end) {
+                if(*this == '\n') {
+                    *this = '\0';
+
+                    assert( this >= start && this - start < PARSE_CTREES_MAXBUFSIZE);
+                                        
+                    char linebuf[PARSE_CTREES_MAXBUFSIZE];
+                    memmove(linebuf, start, this - start + 1);
+
+                    offset += (this - start + 1);
+                    start = this + 1;/* might point beyond valid memory but should not get de-referenced */
+
+                    /* fprintf(stderr,"calling parse_line with `%s`\n\n", linebuf); */
+                    int status = parse_line_ctrees(linebuf, column_info, base_ptr_info);
+                    if(status != EXIT_SUCCESS) {
+                        return status; 
                     }
-                    curr_pos++;this++;
+                    /* fprintf(stderr,"parsed one line. bytes processed = %"PRId64" nbytes_read = %zd this = %p strlen(linebuf) = %zu\n", */
+                    /*         offset - start_offset, nbytes_read, this, strlen(linebuf)); */
                 }
-                if(curr_pos == nbytes_read) {
-                    keep_parsing = 0;
-                    curr_pos = 0;
+                this++;
+                if(this < end && *this == '#') {
+                    /* fprintf(stderr,"encountered '#'...stopping parsing\n"); */
+                    /* we have encountered the beginning of a new tree (new line and begins with '#tree ')*/
+                    done_reading_tree = 1;
+                    this = (char *) end;/* casting, otherwise compiler complains */
                     break;
                 }
-                
-                read_buffer[curr_pos] = '\0';
-                start += curr_pos + 1;/* might point beyond valid memory but should not get de-referenced */
-                bytes_processed += curr_pos + 1;/* not sure if I need this +1 : MS 2nd Aug, 2018*/
-                
-                char linebuf[PARSE_CTREES_MAXBUFSIZE];
-                memmove(linebuf, read_buffer, curr_pos);
-                int status = parse_line_ctrees(linebuf, column_info, base_ptr_info);
-                if(status != EXIT_SUCCESS) {
-                    return status; 
-                }
             }
-            PARSE_CTREES_XASSERT(bytes_processed <= nbytes_read, EXIT_FAILURE,
-                                 "Error: bytes processed = %zd should be at most num bytes read = %zd\n",
-                                 bytes_processed, nbytes_read);
-            offset += bytes_processed;
+            PARSE_CTREES_XASSERT(offset - start_offset <= nbytes_read, EXIT_FAILURE,
+                                 "Error: bytes processed = %"PRId64" should be at most num bytes read = %zd\n",
+                                 offset - start_offset, nbytes_read);
         }
     }
 
