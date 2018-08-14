@@ -21,16 +21,24 @@
 
 
 /* this is the maximum number of CTREES columns that can be requested
-   (note: it is okay for the ctrees `tree_?_?_?.dat` files themselves to contain more columns) */
+   (note: it is okay for the ctrees `tree_?_?_?.dat` files themselves to contain more columns)
+*/
 #define PARSE_CTREES_MAX_NCOLS      128
 
-/* max. number of characters in a column name */
+/* max. number of characters in a CTREES column name in the `tree_?_?_?.dat` file */
 #define PARSE_CTREES_MAX_COLNAME_LEN 64
 
-/* max. number of expected characters in one single-line */
+/* max. number of bytes to read at one call. Probably should
+   be larger than the number of characters in one line in the `tree_?_?_?.dat` file
+   Since the reads are unbuffered, increasing this value
+   may lead to better performance  */
 #define PARSE_CTREES_MAXBUFSIZE      1240
 
 #if PARSE_CTREES_MAX_COLNAME_LEN < 64
+#error Some of the Consistent-Trees column names are long. Please increase PARSE_CTREES_MAX_COLNAME_LEN to be at least 64
+#endif
+
+#if PARSE_CTREES_MAXBUFSIZE < 480
 #error Some of the Consistent-Trees column names are long. Please increase PARSE_CTREES_MAX_COLNAME_LEN to be at least 64
 #endif
 
@@ -53,7 +61,15 @@
 
 
 
+/* valid numeric types for the destination for any CTrees column.
+   An 'int' in CTrees could be read into a 'double' pointer. These
+   numeric types refer to the destination type, i.e., in the case
+   where an CTrees 'int' is being read into a 'double', the
+   format should be specified as 'F64'.
 
+   All the actual reading from the `tree_?_?_?.dat` files are done
+   as 'strings'. The appropriate conversion to the destination is
+   chosen based on the destination numeric_type */
 enum parse_numeric_types
 {
     I32 = 0, /* int32_t */
@@ -66,52 +82,80 @@ enum parse_numeric_types
 };
 
 
+/* because, we do not know apriori how many halos will be in a tree,
+   we will have to re-allocate as and when necessary. Therefore, we
+   do need to keep a count of "independent" arrays, all of which need to be
+   re-allocated any time.
+
+   The idea is that columns get parsed into multiple arrays, each of which are
+   in sync via the array index -- viz., the N'th parsed line, gets assigned to
+   the arr0[N-1], arr1[N-1], arr2[N-1] ... and so on (where the arrays themselves
+   can be `structs`)
+
+   base_ptr_info simply is the unique set that contain all of the destination memory
+   locations for the columns requested from CTREES
+
+   See the examples in the associated `main.c` for usage. The user is expected
+   to populate this struct. */ 
+
 struct base_ptr_info {
     int64_t num_base_ptrs;
     void **base_ptrs[PARSE_CTREES_MAX_NCOLS];/* because the pointers may need to be re-allocated, I need 'void **' */
     size_t base_element_size[PARSE_CTREES_MAX_NCOLS];/* sizeof(**(base_ptrs[i])) --> in bytes */
+    union {
+        /* nallocated is the number of elements allocated for each
+           element in base_ptrs (i.e., alloc'ed/re-alloc'ed via the void **base_ptrs) */
+        int64_t nhalos_allocated;/* number of elements allocated in each `base_ptr` */
+        int64_t nallocated;
+    };
 
+    /* the number of elements that have been read into *base_ptrs */
     union {
         int64_t N;/* number of rows read */
         int64_t nhalos; /* for convenience */
         int64_t nhalos_read;
     };
-    union {
-        /* to remove any confusion about what nallocated refers to
-           --> nallocated is the number of elements allocated for each
-           element in base_ptrs (i.e., alloc'ed/re-alloc'ed via the void **base_ptrs)
-         */
-        int64_t nhalos_allocated;/* number of elements allocated in each `base_ptr` */
-        int64_t nallocated;
-    };
 };
 
 
 
-/* By storing the struct elements on the stack,
-   I avoid pesky issues of malloc/free */
+/* This struct contains info about:
+   how many columns to parse from each line (ncols),
+   which column number needs to be parsed (column_number)
+   what the destination numeric types are (field_types),
+   which one of the base_ptrs each one of the columns needs to be assigned to (base_ptr_idx),
+   and how to access the relevant memory address within the base_ptr_idx[N] (dest_offset_to_element)
+
+  By storing the struct elements on the stack, I avoid pesky issues of malloc/free
+
+  The code will populate this struct in the function `parse_header_ctrees`, based on the columns requested in the
+  user-specified variable `wanted_columns`
+*/
 struct ctrees_column_to_ptr {
-    int64_t ncols;/* number of columns requested */
+    int64_t ncols;/* number of columns that need to be parsed on each line (all these columns *DO* exist) */
     int32_t column_number[PARSE_CTREES_MAX_NCOLS];/* column number in CTREES data */
     enum parse_numeric_types field_types[PARSE_CTREES_MAX_NCOLS];/* destination data-type, i.e, how to parse the string into a valid numeric value */
     
-    /* For array-of-structure type base-ptrs, this is the offsetof(field);
-       for structure of arrays, this should be 0
+    int64_t base_ptr_idx[PARSE_CTREES_MAX_NCOLS];/* index into the base_ptr array within base_ptr_info struct */
+
+    /* dest_offset_to_element:
+       For array-of-structures (AOS) type base-ptrs, this is the offsetof(field-name-within-struct-definition)
+       For structure-of-arrays (SOA) type base-ptrs, this should be 0
        
        this offset must be >= 0 and < size of each element of the base ptr
        For offset values that are not 0, absolutely use the OFFSETOF macro
        to derive the byte offset of each field */
     size_t dest_offset_to_element[PARSE_CTREES_MAX_NCOLS];/* in bytes */
-    int64_t base_ptr_idx[PARSE_CTREES_MAX_NCOLS];/* index into the base_ptr array within base_ptr_info struct */
 };
 
 
 static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_MAX_COLNAME_LEN], const int nwanted, const char (*names)[PARSE_CTREES_MAX_COLNAME_LEN], const int totncols)
 {
     int *columns = calloc(nwanted, sizeof(*columns));
-    PARSE_CTREES_XASSERT( columns != NULL, NULL,
-                          "Error: Could not allocate memory for reading in the columns for each of the %d fields\n",
-                          nwanted);
+    PARSE_CTREES_XASSERT(columns != NULL,
+                         NULL,
+                         "Error: Could not allocate memory for reading in the columns for each of the %d fields\n",
+                         nwanted);
     for(int i=0;i<nwanted;i++) {
         columns[i] = -1;
     }
@@ -198,14 +242,17 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
         char *tofree, *string;
         
         tofree = string = strdup(linebuf);
-        PARSE_CTREES_XASSERT(string != NULL, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(string != NULL,
+                             EXIT_FAILURE,
                              "Error: Could not duplicate the header line (header: = `%s`\n)",
                              linebuf);
         
         int totncols = 0;
         char *token = NULL;
         
-        /* consistent-trees currently uses white-space */
+        /* CTREES currently uses white-space but this parsing will also
+           use the comma to break (i.e., if, in the future, the CTREES format changes
+           to using comma's, the code will still work) */
         while ((token = strsep(&string, " ,")) != NULL) {
             /* fprintf(stderr,"%35s %zu\n", token, strlen(token)); */
             totncols++;
@@ -216,12 +263,14 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
         /* read succeeded -> now parse the column names */
         const char delimiters[] = " ,\n#";/* space, comma, new-line, and #*/
         char (*names)[PARSE_CTREES_MAX_COLNAME_LEN] = calloc(totncols, sizeof(*names));
-        PARSE_CTREES_XASSERT(names != NULL, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(names != NULL,
+                             EXIT_FAILURE,
                              "Error: Could not allocate memory to store each column name (total size requested = %zu bytes\n)",
                              totncols * sizeof(*names));
         
         tofree = string = strdup(linebuf);
-        PARSE_CTREES_XASSERT(string != NULL, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(string != NULL,
+                             EXIT_FAILURE,
                              "Error: Could not duplicate the header line (header: = `%s`\n)",
                              linebuf);
         
@@ -230,7 +279,8 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
             size_t size=0, totlen = strlen(token);
             if(totlen == 0) continue;
             /* fprintf(stderr,"[%d] -- '%s' -- ", col, token); */
-            PARSE_CTREES_XASSERT(totlen > 0 && totlen < PARSE_CTREES_MAX_COLNAME_LEN, EXIT_FAILURE,
+            PARSE_CTREES_XASSERT(totlen > 0 && totlen < PARSE_CTREES_MAX_COLNAME_LEN,
+                                 EXIT_FAILURE,
                                  "totlen = %zu should be between (0, %d)\n",
                                  totlen, (int) PARSE_CTREES_MAX_COLNAME_LEN);
             char *colname = names[col];
@@ -247,7 +297,8 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
                             token[j] = '\0';
                             /* fprintf(stderr," `token = %s` ", &token[i+1]); */
                             int ctrees_colnum = atoi(&(token[i+1]));
-                            PARSE_CTREES_XASSERT(ctrees_colnum == col, EXIT_FAILURE,
+                            PARSE_CTREES_XASSERT(ctrees_colnum == col, 
+                                                 EXIT_FAILURE,
                                                  "ctrees_colnum = %d should equal col = %d\n",
                                                  ctrees_colnum, col);
                             break;
@@ -264,7 +315,8 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
             /* fprintf(stderr, " `%s` \n", names[col]); */
             col++;
         }
-        PARSE_CTREES_XASSERT(col == totncols, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(col == totncols,
+                             EXIT_FAILURE,
                              "Error: Previous parsing indicated %d columns in the header but only found %d actual column names\n"
                              "Please check that the delimiters spefied to `strsep` are the same in all calls\n",
                              totncols, col);
@@ -344,20 +396,23 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
     for(int i=0;i<column_info->ncols;i++) {
         const int wanted_col = column_info->column_number[i];
         const int64_t base_ptr_idx = column_info->base_ptr_idx[i];
-        PARSE_CTREES_XASSERT(base_ptr_idx < base_ptr_info->num_base_ptrs, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(base_ptr_idx < base_ptr_info->num_base_ptrs,
+                             EXIT_FAILURE,
                              "Error: Valid values for base pointer index must be in range [0, %"PRId64"). Got %"PRId64" instead\n",
                              base_ptr_info->num_base_ptrs, base_ptr_idx);
         char *dest = *((char **) (base_ptr_info->base_ptrs[base_ptr_idx]));
         const size_t base_ptr_stride = base_ptr_info->base_element_size[base_ptr_idx];
         const size_t dest_offset = column_info->dest_offset_to_element[i];
-        PARSE_CTREES_XASSERT(base_ptr_stride >= 4, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(base_ptr_stride >= 4,
+                             EXIT_FAILURE,
                              "Error: Stride=%zu is expected in bytes with a minimum of 4 bytes since that's "
                              "the smallest data-type supported (corresponding to float or int32_t).\n"
                              "Perhaps you forgot to multiply by the sizeof(element)?\n",
                              base_ptr_stride);
-        PARSE_CTREES_XASSERT(dest_offset <= base_ptr_stride, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(dest_offset < base_ptr_stride,
+                             EXIT_FAILURE,
                              "Error: The offset from the starting address of an element can be at most the total stride in bytes\n"
-                             "In this case offset=%zu must in the closed range [0, %zu]. Perhaps you mis-typed the offset?\n",
+                             "In this case offset=%zu must in the half-open range [0, %zu). Perhaps you mis-typed the offset?\n",
                              dest_offset, base_ptr_stride);
             
         /* get to the starting offset for this N'th element */
@@ -380,7 +435,8 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
             }
             icol++;
         }
-        PARSE_CTREES_XASSERT(token != NULL && token[0] != '\0' && icol == wanted_col, EXIT_FAILURE,
+        PARSE_CTREES_XASSERT(token != NULL && token[0] != '\0' && icol == wanted_col,
+                             EXIT_FAILURE,
                              "Error: token=`%s` should have valid non-zero numeric value at this stage.\n"
                              "And the parsed col = %d should be equal to the requested column = %d\n",
                              token, icol, wanted_col);
@@ -442,9 +498,9 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
     const size_t to_read_bytes = PARSE_CTREES_MAXBUFSIZE - 1;
     read_buffer[PARSE_CTREES_MAXBUFSIZE - 1] = '\0';
     int done_reading_tree = 0;
+
     /* two things can happen while reading -> EOF or I reach the next tree */
     while(done_reading_tree == 0) {
-        /* int first = 1; */
         ssize_t nbytes_read = pread(fd, read_buffer, to_read_bytes, offset);
         if(nbytes_read == 0) {
             done_reading_tree = 1;/* we have reached end of file */
@@ -458,10 +514,7 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
                 done_reading_tree = 1;
                 break;
             }
-            /* if(first == 1) { */
-            /*     fprintf(stderr,"read the first chunk\n`%s`\n\n",read_buffer); */
-            /*     first=0; */
-            /* } */
+
             if(nbytes_read < (ssize_t) to_read_bytes) {
                 done_reading_tree = 1;/* we have reached end of file but this read buffer needs to be processed*/
             }
@@ -474,8 +527,12 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
                 if(*this == '\n') {
                     *this = '\0';
 
-                    assert( this >= start && this - start < PARSE_CTREES_MAXBUFSIZE);
-                                        
+                    PARSE_CTREES_XASSERT(this >= start && this - start < PARSE_CTREES_MAXBUFSIZE,
+                                         EXIT_FAILURE,
+                                         "Error: Possible bug in code or mal-formed input\n"
+                                         "Current position = %p starting position = %p difference = %"PRId64" should be in range[0, %d)\n",
+                                         this, start, (int64_t) (this - start), PARSE_CTREES_MAXBUFSIZE);
+                    
                     char linebuf[PARSE_CTREES_MAXBUFSIZE];
                     memmove(linebuf, start, this - start + 1);
 
@@ -499,7 +556,8 @@ static inline int read_single_tree_ctrees(int fd, off_t offset, const struct ctr
                     break;
                 }
             }
-            PARSE_CTREES_XASSERT(offset - start_offset <= nbytes_read, EXIT_FAILURE,
+            PARSE_CTREES_XASSERT(offset - start_offset <= nbytes_read,
+                                 EXIT_FAILURE,
                                  "Error: bytes processed = %"PRId64" should be at most num bytes read = %zd\n",
                                  offset - start_offset, nbytes_read);
         }
