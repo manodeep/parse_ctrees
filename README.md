@@ -17,7 +17,7 @@ The code reads a single tree at a time. For each tree, the code can efficiently 
 - Assign each column to multiple memory locations
 - Handle assignments to both structure-of-arrays and array-of-structures
 - Account for changes in column-naming convention in Consistent Trees (e.g., `snap_num` vs `snap_idx`)
-- Perform various error-checking to "Do the Right Thing"™
+- Perform various error-checking to "Not Do the Wrong Thing"™
 
 # Code Design
 In the general case, any column from the Consistent-Trees output (i.e., something like ``tree_?_?_?.dat``) can be assigned to an arbitrary pointer. Every requested column has a column number, column type, a destination base pointer, size of each element of the destination base pointer, and an offset in bytes to reach the field (only relevant for compound types like ``struct`` or ``unions``). 
