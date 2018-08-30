@@ -113,7 +113,7 @@ struct base_ptr_info {
     union {
         int64_t N;/* number of rows read */
         int64_t nhalos; /* for convenience */
-        int64_t nhalos_read;
+        int64_t nhalos_read;/* for convenience */
     };
 };
 
@@ -149,6 +149,17 @@ struct ctrees_column_to_ptr {
 };
 
 
+
+/* This function takes the array of wanted CTREES columns (``wanted_columns``) and matches those against
+ the column names that were found in the CTREEs output (``names``)
+ ``nwanted`` is the number of elements in ``wanted_columns``
+ ``totncols`` is the number of elements in ``names``
+
+ Returns a integer array of ``nwanted`` elements, where each element of this array contains the column number
+ in CTREES output if a match was found, otherwise contains a -1.
+
+ The performed string matching of column-names between ``wanted_columns`` and ``names`` is case-insensitive.
+*/
 static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_MAX_COLNAME_LEN], const int nwanted, const char (*names)[PARSE_CTREES_MAX_COLNAME_LEN], const int totncols)
 {
     int *columns = calloc(nwanted, sizeof(*columns));
@@ -182,6 +193,7 @@ static inline int * match_column_name(const char (*wanted_columns)[PARSE_CTREES_
 }
 
 
+/* Reallocates each one of the base pointers to the new requested number of elements */
 static inline int reallocate_base_ptrs(struct base_ptr_info *base_info, const int64_t new_N)
 {
     fprintf(stderr,"reallocating from %"PRId64" elements to a %"PRId64" elements. current N = %"PRId64"\n",
@@ -203,6 +215,8 @@ static inline int reallocate_base_ptrs(struct base_ptr_info *base_info, const in
     base_info->nallocated = new_N;
     return EXIT_SUCCESS;
 }
+
+
 
 
 static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLNAME_LEN], enum parse_numeric_types *field_types,
@@ -228,145 +242,145 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
     }
 
     char linebuf[PARSE_CTREES_MAXBUFSIZE];
-    if(fgets(linebuf, PARSE_CTREES_MAXBUFSIZE, fp) != NULL) {
-
-        /* only need the first line -> close the file */
-        fclose(fp);
-
-        /* first check that the first character is a '#' */
-        if(linebuf[0] != '#') {
-            fprintf(stderr,"Error: Consistent-Trees output always contain '#' as the comment character\n"
-                    "However, the first character in the buffer is '%c'\nEntire line is `%s'", linebuf[0], linebuf);
-            return EXIT_FAILURE;
-        }
-        char *tofree, *string;
-        
-        tofree = string = strdup(linebuf);
-        PARSE_CTREES_XASSERT(string != NULL,
-                             EXIT_FAILURE,
-                             "Error: Could not duplicate the header line (header: = `%s`\n)",
-                             linebuf);
-        
-        int totncols = 0;
-        char *token = NULL;
-        
-        /* CTREES currently uses white-space but this parsing will also
-           use the comma to break (i.e., if, in the future, the CTREES format changes
-           to using comma's, the code will still work) */
-        while ((token = strsep(&string, " ,")) != NULL) {
-            /* fprintf(stderr,"%35s %zu\n", token, strlen(token)); */
-            totncols++;
-        }
-        free(tofree);
-
-
-        /* read succeeded -> now parse the column names */
-        const char delimiters[] = " ,\n#";/* space, comma, new-line, and #*/
-        char (*names)[PARSE_CTREES_MAX_COLNAME_LEN] = calloc(totncols, sizeof(*names));
-        PARSE_CTREES_XASSERT(names != NULL,
-                             EXIT_FAILURE,
-                             "Error: Could not allocate memory to store each column name (total size requested = %zu bytes\n)",
-                             totncols * sizeof(*names));
-        
-        tofree = string = strdup(linebuf);
-        PARSE_CTREES_XASSERT(string != NULL,
-                             EXIT_FAILURE,
-                             "Error: Could not duplicate the header line (header: = `%s`\n)",
-                             linebuf);
-        
-        int col = 0;
-        while ((token = strsep(&string, delimiters)) != NULL) {
-            size_t size=0, totlen = strlen(token);
-            if(totlen == 0) continue;
-            /* fprintf(stderr,"[%d] -- '%s' -- ", col, token); */
-            PARSE_CTREES_XASSERT(totlen > 0 && totlen < PARSE_CTREES_MAX_COLNAME_LEN,
-                                 EXIT_FAILURE,
-                                 "totlen = %zu should be between (0, %d)\n",
-                                 totlen, (int) PARSE_CTREES_MAX_COLNAME_LEN);
-            char *colname = names[col];
-            for(size_t i=0;i<totlen;i++) {
-                /* if(token[i] == '#') continue; */
-                if(token[i] == '(') {
-
-#if 1
-                    /* locate the ending ')' -- this while loop is only for additional
-                       testing and can be commented out */
-                    size_t j = i+1;
-                    while(j < totlen) {
-                        if(token[j] == ')') {
-                            token[j] = '\0';
-                            /* fprintf(stderr," `token = %s` ", &token[i+1]); */
-                            int ctrees_colnum = atoi(&(token[i+1]));
-                            PARSE_CTREES_XASSERT(ctrees_colnum == col, 
-                                                 EXIT_FAILURE,
-                                                 "ctrees_colnum = %d should equal col = %d\n",
-                                                 ctrees_colnum, col);
-                            break;
-                        }
-                        j++;
-                    }
-#endif
-                    break;
-                }
-                colname[size] = token[i];
-                size++;
-            }
-            colname[size] = '\0';
-            /* fprintf(stderr, " `%s` \n", names[col]); */
-            col++;
-        }
-        PARSE_CTREES_XASSERT(col == totncols,
-                             EXIT_FAILURE,
-                             "Error: Previous parsing indicated %d columns in the header but only found %d actual column names\n"
-                             "Please check that the delimiters spefied to `strsep` are the same in all calls\n",
-                             totncols, col);
-        free(tofree);
-
-        int * matched_columns = match_column_name((const char (*)[PARSE_CTREES_MAX_COLNAME_LEN])column_names, nfields, (const char (*)[PARSE_CTREES_MAX_COLNAME_LEN]) names, totncols);
-        if(matched_columns == NULL) {
-            return EXIT_FAILURE;
-        }
-        
-        /* do not need the actual names of every column in the ctrees file any longer -> free that memory */
-        free(names);
-
-        
-        /* now sort the matched columns */
-#define SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER(maxlen, a, i, j) {char _sgl_aee_tmp_[maxlen]; memmove(_sgl_aee_tmp_, (a)[(i)], maxlen);memmove((a)[(i)], (a)[(j)], maxlen); memmove((a)[(j)], _sgl_aee_tmp_, maxlen);}
-        
-        /* sort the matched_columns in ascending order */
-#define MULTIPLE_ARRAY_EXCHANGER(type,a,i,j) {                          \
-            SGLIB_ARRAY_ELEMENTS_EXCHANGER(enum parse_numeric_types, field_types,i,j); \
-            SGLIB_ARRAY_ELEMENTS_EXCHANGER(int, matched_columns, i, j); \
-            SGLIB_ARRAY_ELEMENTS_EXCHANGER(int64_t, base_ptr_idx, i, j); \
-            SGLIB_ARRAY_ELEMENTS_EXCHANGER(size_t, dest_offset_to_element, i, j); \
-            SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER(PARSE_CTREES_MAX_COLNAME_LEN, column_names, i, j); \
-        }
-        
-        SGLIB_ARRAY_QUICK_SORT(int, matched_columns, nfields, SGLIB_NUMERIC_COMPARATOR , MULTIPLE_ARRAY_EXCHANGER);
-#undef SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER
-#undef MULTIPLE_ARRAY_EXCHANGER
-
-
-        /* now assign only the columns that were found
-           into the column_info struct */
-        column_info->ncols = 0;
-        for(int i=0;i<nfields;i++) {
-            if(matched_columns[i] == -1) continue;
-
-            const int icol = column_info->ncols;
-            column_info->column_number[icol] = matched_columns[i];
-            column_info->field_types[icol] = field_types[i];
-            column_info->dest_offset_to_element[icol] = dest_offset_to_element[i];
-            column_info->base_ptr_idx[icol] = base_ptr_idx[i];
-            column_info->ncols++;
-        }
-        free(matched_columns);
-    } else {
+    if(fgets(linebuf, PARSE_CTREES_MAXBUFSIZE, fp) == NULL) {
         fprintf(stderr,"Error: Could not read the first line (the header) in the file `%s'\n", filename);
         perror(NULL);
         return EXIT_FAILURE;
     }
+
+    /* file read was successful */
+    /* only need the first line -> close the file */
+    fclose(fp);
+
+    /* first check that the first character is a '#' */
+    if(linebuf[0] != '#') {
+        fprintf(stderr,"Error: Consistent-Trees output always contain '#' as the comment character\n"
+                "However, the first character in the buffer is '%c'\nEntire line is `%s'", linebuf[0], linebuf);
+        return EXIT_FAILURE;
+    }
+    char *tofree, *string;
+        
+    tofree = string = strdup(linebuf);
+    PARSE_CTREES_XASSERT(string != NULL,
+                         EXIT_FAILURE,
+                         "Error: Could not duplicate the header line (header: = `%s`\n)",
+                         linebuf);
+        
+    int totncols = 0;
+    char *token = NULL;
+        
+    /* CTREES currently uses white-space but this parsing will also
+       use the comma to break (i.e., if, in the future, the CTREES format changes
+       to using comma's, the code will still work) */
+    while ((token = strsep(&string, " ,")) != NULL) {
+        /* fprintf(stderr,"%35s %zu\n", token, strlen(token)); */
+        totncols++;
+    }
+    free(tofree);
+
+
+    /* read succeeded -> now parse the column names */
+    const char delimiters[] = " ,\n#";/* space, comma, new-line, and #*/
+    char (*names)[PARSE_CTREES_MAX_COLNAME_LEN] = calloc(totncols, sizeof(*names));
+    PARSE_CTREES_XASSERT(names != NULL,
+                         EXIT_FAILURE,
+                         "Error: Could not allocate memory to store each column name (total size requested = %zu bytes\n)",
+                         totncols * sizeof(*names));
+
+    /* ``tofree`` is simply there to free the memory malloc'ed by strdup. ``string`` itself will get modified */
+    tofree = string = strdup(linebuf);
+    PARSE_CTREES_XASSERT(string != NULL,
+                         EXIT_FAILURE,
+                         "Error: Could not duplicate the header line (header: = `%s`\n)",
+                         linebuf);
+        
+    int col = 0;
+    while ((token = strsep(&string, delimiters)) != NULL) {
+        size_t size=0, totlen = strlen(token);
+        if(totlen == 0) continue;
+        /* fprintf(stderr,"[%d] -- '%s' -- ", col, token); */
+        PARSE_CTREES_XASSERT(totlen > 0 && totlen < PARSE_CTREES_MAX_COLNAME_LEN,
+                             EXIT_FAILURE,
+                             "totlen = %zu should be between (0, %d)\n",
+                             totlen, (int) PARSE_CTREES_MAX_COLNAME_LEN);
+        char *colname = names[col];
+        for(size_t i=0;i<totlen;i++) {
+            if(token[i] == '(') {
+
+#if 1
+                /* locate the ending ')' -- this while loop is only for additional
+                   testing and can be commented out */
+                size_t j = i+1;
+                while(j < totlen) {
+                    if(token[j] == ')') {
+                        token[j] = '\0';
+                        /* fprintf(stderr," `token = %s` ", &token[i+1]); */
+                        int ctrees_colnum = atoi(&(token[i+1]));
+                        PARSE_CTREES_XASSERT(ctrees_colnum == col, 
+                                             EXIT_FAILURE,
+                                             "ctrees_colnum = %d should equal col = %d\n",
+                                             ctrees_colnum, col);
+                        break;
+                    }
+                    j++;
+                }
+#endif
+                break;
+            }
+            colname[size] = token[i];
+            size++;
+        }
+        colname[size] = '\0';
+        /* fprintf(stderr, " `%s` \n", names[col]); */
+        col++;
+    }
+    PARSE_CTREES_XASSERT(col == totncols,
+                         EXIT_FAILURE,
+                         "Error: Previous parsing indicated %d columns in the header but only found %d actual column names\n"
+                         "Please check that the delimiters spefied to `strsep` are the same in all calls\n",
+                         totncols, col);
+    free(tofree);
+
+    int * matched_columns = match_column_name((const char (*)[PARSE_CTREES_MAX_COLNAME_LEN])column_names, nfields, (const char (*)[PARSE_CTREES_MAX_COLNAME_LEN]) names, totncols);
+    if(matched_columns == NULL) {
+        return EXIT_FAILURE;
+    }
+        
+    /* do not need the actual names of every column in the ctrees file any longer -> free that memory */
+    free(names);
+
+        
+    /* now sort the matched columns */
+#define SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER(maxlen, a, i, j) {char _sgl_aee_tmp_[maxlen]; memmove(_sgl_aee_tmp_, (a)[(i)], maxlen);memmove((a)[(i)], (a)[(j)], maxlen); memmove((a)[(j)], _sgl_aee_tmp_, maxlen);}
+        
+    /* sort the matched_columns in ascending order */
+#define MULTIPLE_ARRAY_EXCHANGER(type,a,i,j) {                          \
+        SGLIB_ARRAY_ELEMENTS_EXCHANGER(enum parse_numeric_types, field_types,i,j); \
+        SGLIB_ARRAY_ELEMENTS_EXCHANGER(int, matched_columns, i, j);     \
+        SGLIB_ARRAY_ELEMENTS_EXCHANGER(int64_t, base_ptr_idx, i, j);    \
+        SGLIB_ARRAY_ELEMENTS_EXCHANGER(size_t, dest_offset_to_element, i, j); \
+        SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER(PARSE_CTREES_MAX_COLNAME_LEN, column_names, i, j); \
+    }
+        
+    SGLIB_ARRAY_QUICK_SORT(int, matched_columns, nfields, SGLIB_NUMERIC_COMPARATOR , MULTIPLE_ARRAY_EXCHANGER);
+#undef SGLIB_CHAR_ARRAY_ELEMENTS_EXCHANGER
+#undef MULTIPLE_ARRAY_EXCHANGER
+
+
+    /* now assign only the columns that were found
+       into the column_info struct */
+    column_info->ncols = 0;
+    for(int i=0;i<nfields;i++) {
+        if(matched_columns[i] == -1) continue;
+
+        const int icol = column_info->ncols;
+        column_info->column_number[icol] = matched_columns[i];
+        column_info->field_types[icol] = field_types[i];
+        column_info->dest_offset_to_element[icol] = dest_offset_to_element[i];
+        column_info->base_ptr_idx[icol] = base_ptr_idx[i];
+        column_info->ncols++;
+    }
+    free(matched_columns);
 
     return EXIT_SUCCESS;
 }
@@ -460,11 +474,24 @@ static inline int parse_line_ctrees(const char *linebuf, const struct ctrees_col
             *((int32_t *) dest) = tmp;
             break;
         }
+        case U32:{
+            uint32_t tmp = (uint32_t) strtoul(token, NULL, 10);
+            /* fprintf(stderr,"[uint32_t] := %"PRIu32" (col #%d)\n", tmp, wanted_col); */
+            *((uint32_t *) dest) = tmp;
+            break;
+        }
         case I64:{
             int64_t tmp = (int64_t) strtoll(token, NULL, 10);
             /* fprintf(stderr,"[int64_t] := %"PRId64" (col #%d)\n", tmp, wanted_col); */
             *((int64_t *) dest) = tmp;
             break;
+        }
+
+        case U64:{
+             uint64_t tmp = (uint64_t) strtoull(token, NULL, 10);
+             /* fprintf(stderr,"[uint64_t] := %"PRIu64" (col #%d)\n", tmp, wanted_col); */
+             *((uint64_t *) dest) = tmp;
+             break;
         }
         default:
             fprintf(stderr,"Error: Unknown value for parse type = %d\n", wanted_type);
