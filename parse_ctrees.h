@@ -307,7 +307,7 @@ static inline int parse_header_ctrees(char (*column_names)[PARSE_CTREES_MAX_COLN
         for(size_t i=0;i<totlen;i++) {
             if(token[i] == '(') {
 
-#if 1
+#if 0
                 /* locate the ending ')' -- this while loop is only for additional
                    testing and can be commented out */
                 size_t j = i+1;
